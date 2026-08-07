@@ -1,1 +1,54 @@
+name: Sync catálogo desde Google Drive
 
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 8 * * *'  # todos los días a las 08:00 UTC (~02:00 hora Yucatán)
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install google-api-python-client google-auth google-auth-httplib2 pdfplumber
+
+      - name: Descargar PDFs nuevos/modificados de Drive
+        env:
+          GDRIVE_SA_KEY_JSON: ${{ secrets.GDRIVE_SA_KEY_JSON }}
+        run: |
+          mkdir -p downloads data
+          python scripts/sync_drive.py \
+            --folder-id "${{ vars.GDRIVE_FOLDER_ID }}" \
+            --out downloads/ \
+            --manifest data/manifest.json
+
+      - name: Parsear PDFs y actualizar índice
+        run: |
+          python scripts/build_index.py \
+            --downloads downloads/ \
+            --index data/refacciones_index.json
+
+      - name: Commit y push si hubo cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/refacciones_index.json data/manifest.json
+          if git diff --cached --quiet; then
+            echo "Sin cambios en el índice."
+          else
+            git commit -m "Sync automático de catálogo desde Drive [skip ci]"
+            git push
+          fi
