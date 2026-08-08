@@ -76,7 +76,11 @@ def parse_medida(texto):
     m = METRIC_RE.search(t)
     if m:
         n1, n2, rin = m.groups()
-        if es_atv:
+        # los anchos métricos de moto son siempre >=60mm; si ambos
+        # números son chicos (diámetro/ancho tipo ATV, ej. 22/10) es
+        # notación ATV aunque la palabra "ATV" no aparezca en el texto
+        parecen_atv = float(n1) < 40 and float(n2) < 40
+        if es_atv or parecen_atv:
             return ('atv', float(n1), float(n2), int(round(float(rin))))
         return ('metric', int(round(float(n1))), int(round(float(n2))), int(round(float(rin))))
 
