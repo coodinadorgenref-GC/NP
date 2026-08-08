@@ -1,0 +1,11 @@
+{
+  "_instrucciones": "Cada entrada es una equivalencia FÍSICA confirmada entre dos medidas de llanta escritas en distinto sistema (métrico vs pulgadas), NO una coincidencia de texto. Solo agrega un par aquí si alguien corroboró que una llanta realmente cabe/sustituye a la otra en el rin y montaje reales. El pipeline nunca genera estas entradas automáticamente.",
+  "_formato_ejemplo": {
+    "metrica": "80/100-21",
+    "bias_pulgadas": "3.00-21",
+    "confirmado_por": "nombre o iniciales de quien lo corroboró físicamente",
+    "fecha": "YYYY-MM-DD",
+    "notas": "opcional: contexto, modelo donde se probó, etc."
+  },
+  "equivalencias": []
+}
