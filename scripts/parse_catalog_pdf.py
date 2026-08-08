@@ -3,6 +3,11 @@ Parsea un PDF de catálogo "por modelo" de Vento (estructura:
 SECCION: VCxx/VMxx <NOMBRE> seguido de una tabla Ref. | Código | Descripción)
 y devuelve una lista de piezas encontradas.
 
+Algunos PDFs del Drive (ej. "Yuma 250 - 2026.pdf") tienen la tabla
+incrustada como IMAGEN (captura de pantalla) en vez de texto/tabla real
+-- pdfplumber no puede leer texto de una imagen. Para esos casos se activa
+un respaldo con OCR (tesseract) que renderiza la página y lee el texto.
+
 Uso como librería:
     from parse_catalog_pdf import parse_pdf, parse_model_year_from_filename
     filas = parse_pdf("Tornado 300 - 2026.pdf")
@@ -12,21 +17,103 @@ import pdfplumber
 
 # Código de refacción Vento: 2 letras + 6-8 dígitos (ej. VC01020046, VM04020045)
 CODE_RE = re.compile(r'^[A-Z]{2}\d{6,8}$')
+CODE_ANYWHERE_RE = re.compile(r'\b[A-Z]{2}\d{6,8}\b')
 SECTION_RE = re.compile(r'SECCION:\s*([A-Z]{2}\d{2})\s+([^\n]+)')
 # "Tornado 300 - 2026.pdf" -> modelo="Tornado 300", anio="2026"
 FILENAME_RE = re.compile(r'^(.*?)\s*-\s*(\d{4})\s*\.pdf$', re.IGNORECASE)
+
+# Umbral: si el área cubierta por imágenes en la página supera este
+# porcentaje del área total Y no se encontró ninguna tabla de texto,
+# se asume que la tabla está "quemada" en una imagen y se usa OCR.
+UMBRAL_AREA_IMAGEN = 0.30
 
 
 def parse_model_year_from_filename(filename):
     m = FILENAME_RE.match(filename.strip())
     if m:
         return m.group(1).strip(), m.group(2).strip()
-    # fallback: sin año detectable
     return filename.rsplit('.', 1)[0].strip(), None
 
 
-def parse_pdf(path):
-    """Devuelve lista de dicts: seccion_cod, seccion_nombre, ref, codigo, descripcion, pagina"""
+def _area_imagenes(page):
+    area_pagina = page.width * page.height
+    if area_pagina == 0:
+        return 0.0
+    area_img = sum(
+        max(0, img['x1'] - img['x0']) * max(0, img['bottom'] - img['top'])
+        for img in page.images
+    )
+    return area_img / area_pagina
+
+
+def _parse_tabla_texto(page):
+    """Extrae filas Ref/Código/Descripción de tablas de texto real
+    (rápido y confiable cuando el PDF sí tiene texto seleccionable)."""
+    filas = []
+    for table in page.extract_tables():
+        if not table:
+            continue
+        header = [c.strip() if c else '' for c in table[0]]
+        if 'Código' not in header and 'Ref.' not in header:
+            continue  # no es la tabla de refacciones (ej. tabla de aceite)
+        for row in table[1:]:
+            if not row or len(row) < 3:
+                continue
+            ref, codigo, desc = row[0], row[1], row[2]
+            if not codigo:
+                continue
+            codigo = codigo.strip()
+            if not CODE_RE.match(codigo):
+                continue
+            desc = (desc or '').replace('\n', ' ').strip()
+            filas.append({'ref': (ref or '').strip(), 'codigo': codigo, 'descripcion': desc})
+    return filas
+
+
+def _linea_util(linea):
+    """Filtra ruido de OCR (líneas de diagrama, números sueltos,
+    símbolos) que no aporta a la descripción."""
+    letras = sum(c.isalpha() for c in linea)
+    return letras >= 3
+
+
+def _parse_tabla_ocr(page):
+    """Respaldo: renderiza la página como imagen y usa OCR. La tabla no
+    conserva estructura de columnas en el texto OCR, así que se parsea
+    como pares alternados 'línea con código' / 'línea(s) de descripción'."""
+    import pytesseract
+
+    im = page.to_image(resolution=300).original
+    texto = pytesseract.image_to_string(im)
+
+    filas = []
+    codigo_actual = None
+    desc_lines = []
+
+    def cerrar_actual():
+        if codigo_actual:
+            desc = ' '.join(l.strip() for l in desc_lines if _linea_util(l)).strip()
+            filas.append({'ref': '', 'codigo': codigo_actual, 'descripcion': desc})
+
+    for linea in texto.splitlines():
+        linea = linea.strip()
+        if not linea:
+            continue
+        m = CODE_ANYWHERE_RE.search(linea)
+        # una línea que es *solo* el código (o el código + basura corta)
+        # marca el inicio de una nueva pieza
+        if m and len(linea) <= len(m.group(0)) + 3:
+            cerrar_actual()
+            codigo_actual = m.group(0)
+            desc_lines = []
+        else:
+            desc_lines.append(linea)
+    cerrar_actual()
+    return filas
+
+
+def parse_pdf(path, usar_ocr=True):
+    """Devuelve lista de dicts: seccion_cod, seccion_nombre, ref, codigo, descripcion, pagina, fuente"""
     results = []
     current_section = (None, None)
     with pdfplumber.open(path) as pdf:
@@ -36,30 +123,23 @@ def parse_pdf(path):
             if m:
                 current_section = (m.group(1), m.group(2).strip())
 
-            for table in page.extract_tables():
-                if not table:
-                    continue
-                header = [c.strip() if c else '' for c in table[0]]
-                if 'Código' not in header and 'Ref.' not in header:
-                    continue  # no es la tabla de refacciones (ej. tabla de aceite)
-                for row in table[1:]:
-                    if not row or len(row) < 3:
-                        continue
-                    ref, codigo, desc = row[0], row[1], row[2]
-                    if not codigo:
-                        continue
-                    codigo = codigo.strip()
-                    if not CODE_RE.match(codigo):
-                        continue
-                    desc = (desc or '').replace('\n', ' ').strip()
-                    results.append({
-                        'seccion_cod': current_section[0],
-                        'seccion_nombre': current_section[1],
-                        'ref': (ref or '').strip(),
-                        'codigo': codigo,
-                        'descripcion': desc,
-                        'pagina': i,
-                    })
+            filas = _parse_tabla_texto(page)
+            fuente = 'texto'
+
+            if not filas and usar_ocr and _area_imagenes(page) >= UMBRAL_AREA_IMAGEN:
+                filas = _parse_tabla_ocr(page)
+                fuente = 'ocr'
+
+            for f in filas:
+                results.append({
+                    'seccion_cod': current_section[0],
+                    'seccion_nombre': current_section[1],
+                    'ref': f['ref'],
+                    'codigo': f['codigo'],
+                    'descripcion': f['descripcion'],
+                    'pagina': i,
+                    'fuente': fuente,
+                })
     return results
 
 
