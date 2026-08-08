@@ -20,8 +20,30 @@ import json
 import os
 
 from parse_catalog_pdf import parse_pdf, parse_model_year_from_filename
+from tire_size_normalizer import parse_medida, parse_medida_camara, medida_canonica_str
 
 TODAY = datetime.date.today().isoformat()
+
+
+def _detectar_medida(codigo, descripcion):
+    """Si la pieza es llanta o recámara, intenta extraer su medida
+    canónica a partir de la descripción, para mostrarla en el buscador
+    y poder comparar tallas entre códigos distintos. Devuelve None si
+    no aplica o no se reconoce ninguna medida."""
+    desc_up = (descripcion or '').upper()
+    es_camara = 'CAMARA' in desc_up or 'RECAMARA' in desc_up or codigo.startswith('CAM')
+    es_llanta = 'LLANTA' in desc_up or codigo.startswith('VG')
+
+    if es_camara:
+        clave = parse_medida_camara(descripcion)
+    elif es_llanta:
+        clave = parse_medida(descripcion)
+    else:
+        return None
+
+    if clave is None:
+        return None
+    return {'tipo': clave[0], 'canonica': medida_canonica_str(clave)}
 
 
 def load_json(path, default):
@@ -59,6 +81,10 @@ def main():
             # la descripción más reciente gana (suele ser más completa)
             if fila['descripcion']:
                 entry['descripcion'] = fila['descripcion']
+
+            medida = _detectar_medida(codigo, entry['descripcion'])
+            if medida:
+                entry['medida'] = medida
 
             clave_app = (modelo, anio, fila['seccion_cod'])
             vistos_en_este_pdf.add((codigo, clave_app))
@@ -98,7 +124,34 @@ def main():
     with open(args.index, 'w', encoding='utf-8') as f:
         json.dump(index, f, ensure_ascii=False, indent=2, sort_keys=True)
 
+    _anotar_medidas_relacionadas(index)
+
+    with open(args.index, 'w', encoding='utf-8') as f:
+        json.dump(index, f, ensure_ascii=False, indent=2, sort_keys=True)
+
     print(f'Índice actualizado: {len(index)} códigos totales.')
+
+
+def _anotar_medidas_relacionadas(index):
+    """Para cada llanta/recámara con medida detectada, anota qué otros
+    códigos comparten la MISMA medida canónica -- como referencia para
+    quien busca, nunca como fusión automática (mismo tamaño puede ser
+    distinto dibujo/uso, ver conversación sobre 3.00-18 P3 vs P4)."""
+    from collections import defaultdict
+
+    por_medida = defaultdict(list)
+    for codigo, entry in index.items():
+        medida = entry.get('medida')
+        if medida:
+            por_medida[(medida['tipo'], medida['canonica'])].append(codigo)
+
+    for codigo, entry in index.items():
+        medida = entry.get('medida')
+        if not medida:
+            continue
+        hermanos = [c for c in por_medida[(medida['tipo'], medida['canonica'])] if c != codigo]
+        if hermanos:
+            entry['medida']['otros_codigos_misma_medida'] = sorted(hermanos)
 
 
 if __name__ == '__main__':
