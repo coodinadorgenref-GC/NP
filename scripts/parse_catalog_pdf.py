@@ -4,9 +4,19 @@ SECCION: VCxx/VMxx <NOMBRE> seguido de una tabla Ref. | Código | Descripción)
 y devuelve una lista de piezas encontradas.
 
 Algunos PDFs del Drive (ej. "Yuma 250 - 2026.pdf") tienen la tabla
-incrustada como IMAGEN (captura de pantalla) en vez de texto/tabla real
--- pdfplumber no puede leer texto de una imagen. Para esos casos se activa
-un respaldo con OCR (tesseract) que renderiza la página y lee el texto.
+incrustada como IMAGEN (captura de pantalla) o como DIAGRAMA VECTORIAL
+(dibujo de líneas/curvas, ej. despieces de motor) en vez de texto/tabla
+real -- pdfplumber no puede leer texto de ninguno de los dos casos. Para
+esos casos se activa un respaldo con OCR (tesseract) que renderiza la
+página completa como imagen y lee el texto.
+
+Nota: pdfplumber solo cuenta como "imagen" los objetos raster (fotos/
+capturas incrustadas), NO los gráficos vectoriales. Por eso el OCR se
+activa siempre que no se encontró ninguna tabla de texto en la página,
+en vez de basarse en el % de área cubierta por imágenes -- ese umbral
+subestimaba páginas dominadas por diagramas vectoriales (ej. "Phantom S
+170 - 2026.pdf", donde despieces de estator/generador son vectores y se
+saltaban silenciosamente, dando solo 4 códigos extraídos de todo el PDF).
 
 Uso como librería:
     from parse_catalog_pdf import parse_pdf, parse_model_year_from_filename
@@ -22,9 +32,10 @@ SECTION_RE = re.compile(r'SECCION:\s*([A-Z]{2}\d{2})\s+([^\n]+)')
 # "Tornado 300 - 2026.pdf" -> modelo="Tornado 300", anio="2026"
 FILENAME_RE = re.compile(r'^(.*?)\s*-\s*(\d{4})\s*\.pdf$', re.IGNORECASE)
 
-# Umbral: si el área cubierta por imágenes en la página supera este
-# porcentaje del área total Y no se encontró ninguna tabla de texto,
-# se asume que la tabla está "quemada" en una imagen y se usa OCR.
+# (Histórico) Umbral que se usaba para decidir si activar OCR según el
+# área cubierta por imágenes rasterizadas. Se dejó de usar como gate
+# porque no detectaba diagramas vectoriales (ver nota arriba); ahora el
+# OCR se activa siempre que la página no produjo ninguna tabla de texto.
 UMBRAL_AREA_IMAGEN = 0.30
 
 
@@ -126,7 +137,11 @@ def parse_pdf(path, usar_ocr=True):
             filas = _parse_tabla_texto(page)
             fuente = 'texto'
 
-            if not filas and usar_ocr and _area_imagenes(page) >= UMBRAL_AREA_IMAGEN:
+            # Respaldo OCR: si no se encontró ninguna tabla de texto real,
+            # asumimos que la tabla está "quemada" en la página (imagen
+            # raster o diagrama vectorial) y renderizamos + OCR. Ya no se
+            # filtra por % de área de imagen (ver nota al inicio del archivo).
+            if not filas and usar_ocr:
                 filas = _parse_tabla_ocr(page)
                 fuente = 'ocr'
 
