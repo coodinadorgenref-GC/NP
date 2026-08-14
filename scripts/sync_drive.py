@@ -74,6 +74,11 @@ def main():
     ap.add_argument('--folder-id', required=True)
     ap.add_argument('--out', required=True, help='directorio donde descargar PDFs nuevos/cambiados')
     ap.add_argument('--manifest', required=True, help='ruta a data/manifest.json')
+    ap.add_argument('--force', action='store_true',
+                     help='ignora el manifest y re-descarga/reprocesa TODOS los PDFs, '
+                          'aunque su modifiedTime no haya cambiado. Util para un '
+                          'backfill puntual (ej. despues de arreglar el parser) sin '
+                          'esperar a que Vento vuelva a subir cada archivo.')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -87,13 +92,15 @@ def main():
     service = get_drive_service()
     all_pdfs = list_pdfs_recursive(service, args.folder_id)
     print(f'Encontrados {len(all_pdfs)} PDFs en Drive.')
+    if args.force:
+        print('--force activo: se re-descargaran y reprocesaran TODOS los PDFs.')
 
     changed = []
     seen_ids = set()
     for f in all_pdfs:
         seen_ids.add(f['id'])
         prev = manifest.get(f['id'])
-        if prev and prev.get('modifiedTime') == f['modifiedTime']:
+        if not args.force and prev and prev.get('modifiedTime') == f['modifiedTime']:
             continue  # sin cambios
         dest = os.path.join(args.out, f"{f['id']}.pdf")
         print(f"Descargando: {f['path']} ({f['id']})")

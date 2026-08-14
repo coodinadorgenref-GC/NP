@@ -3,7 +3,13 @@ name: Sync catálogo desde Google Drive
 on:
   schedule:
     - cron: '0 9 * * *'   # todos los días 03:00 hora CDMX (09:00 UTC)
-  workflow_dispatch: {}     # botón "Run workflow" manual en GitHub
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: 'Reprocesar TODOS los PDFs (ignora fechas de modificacion). Usar tras un cambio en el parser.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -31,7 +37,8 @@ jobs:
           python scripts/sync_drive.py \
             --folder-id "${{ vars.GDRIVE_FOLDER_ID }}" \
             --out downloads \
-            --manifest data/manifest.json
+            --manifest data/manifest.json \
+            ${{ inputs.force_all && '--force' || '' }}
 
       - name: Reconstruir índice de compatibilidad
         run: |
