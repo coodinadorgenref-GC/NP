@@ -27,7 +27,8 @@ import pdfplumber
 
 # Código de refacción Vento: 2 letras + 6-8 dígitos (ej. VC01020046, VM04020045)
 CODE_RE = re.compile(r'^[A-Z]{2}\d{6,8}$')
-CODE_ANYWHERE_RE = re.compile(r'\b[A-Z]{2}\d{6,8}\b')
+# case-insensitive: el OCR a veces lee el código en minúsculas (ej. "vM10010035")
+CODE_ANYWHERE_RE = re.compile(r'\b[A-Z]{2}\d{6,8}\b', re.IGNORECASE)
 SECTION_RE = re.compile(r'SECCION:\s*([A-Z]{2}\d{2})\s+([^\n]+)')
 # "Tornado 300 - 2026.pdf" -> modelo="Tornado 300", anio="2026"
 FILENAME_RE = re.compile(r'^(.*?)\s*-\s*(\d{4})\s*\.pdf$', re.IGNORECASE)
@@ -88,10 +89,34 @@ def _linea_util(linea):
     return letras >= 3
 
 
+# El pie de página institucional ("Si tienes dudas escríbenos...
+# vento.com", el logo "VENTO") aparece en TODAS las páginas y el OCR lo
+# lee como texto normal. Si la última fila real de la tabla queda antes
+# del pie de página (el caso común), ese texto se pegaba a la
+# descripción de esa última fila porque no hay ningún código después
+# que cierre la fila y dispare cerrar_actual(). Se filtra aparte en vez
+# de depender de _linea_util (que sí cuenta como "útil" por tener
+# suficientes letras).
+_RUIDO_PIE_PAGINA_RE = re.compile(r'vento\.com|whatsapp|^VEN.?TO$', re.IGNORECASE)
+
+
+def _es_ruido_pie_pagina(linea):
+    return bool(_RUIDO_PIE_PAGINA_RE.search(linea))
+
+
 # Fila OCR con Ref + Código + Descripción juntos en una sola línea, ej.
 # "1  VM10010035  Estator" (tablas con texto real bajo el diagrama, donde
-# OCR sí conserva la fila completa). Ref puede traer punto o paréntesis.
-FILA_COMPLETA_OCR_RE = re.compile(r'^(\d{1,3})[.\)]?\s+([A-Z]{2}\d{6,8})\s+(.+)$')
+# OCR sí conserva la fila completa). El OCR de estas tablas mete ruido
+# de los bordes de celda como separador en vez de espacio real (ej.
+# "1_|vM10010035" o "2 |VM10030023 [Rotor"), y a veces confunde
+# mayúsculas/minúsculas del código (ej. "vM10010035" en vez de
+# "VM10010035") -- por eso la clase de separador acepta |, [, ], _
+# ademas de espacio/punto/parentesis, y el match es case-insensitive
+# (el código se normaliza a mayúsculas al capturarlo).
+FILA_COMPLETA_OCR_RE = re.compile(
+    r'^(\d{1,3})[\s.\)_|\[\]\\/]*([A-Z]{2}\d{6,8})[\s|\[\]]*(.*)$',
+    re.IGNORECASE,
+)
 
 
 def _parse_tabla_ocr(page):
@@ -111,12 +136,18 @@ def _parse_tabla_ocr(page):
     termina tratada como texto descriptivo de la fila anterior (o se
     descarta si es la primera fila de la tabla). Esto pasó con
     "Hipster 170 - 2025.pdf" pág. 32: la tabla completa (VM10010035,
-    VM10030023, VM10010026) se perdió sin ningún aviso.
+    VM10030023, VM10010026) se perdía sin ningún aviso.
+
+    --psm 6 (asume un solo bloque uniforme de texto) en vez del default
+    (--psm 3, que intenta segmentar párrafos/columnas) porque en tablas
+    densas el modo automático se saltaba filas completas -- probado
+    contra el PDF real: con psm 3 tesseract solo leía 1 de 3 filas de la
+    sección VM10 GENERADOR; con psm 6 lee las 3.
     """
     import pytesseract
 
     im = page.to_image(resolution=300).original
-    texto = pytesseract.image_to_string(im)
+    texto = pytesseract.image_to_string(im, config='--psm 6')
 
     filas = []
     codigo_actual = None
@@ -130,15 +161,16 @@ def _parse_tabla_ocr(page):
 
     for linea in texto.splitlines():
         linea = linea.strip()
-        if not linea:
+        if not linea or _es_ruido_pie_pagina(linea):
             continue
 
         m_completa = FILA_COMPLETA_OCR_RE.match(linea)
         if m_completa:
             cerrar_actual()
             ref_actual = m_completa.group(1)
-            codigo_actual = m_completa.group(2)
-            desc_lines = [m_completa.group(3)]
+            codigo_actual = m_completa.group(2).upper()
+            resto = m_completa.group(3).strip()
+            desc_lines = [resto] if resto else []
             continue
 
         m = CODE_ANYWHERE_RE.search(linea)
@@ -147,7 +179,7 @@ def _parse_tabla_ocr(page):
         if m and len(linea) <= len(m.group(0)) + 3:
             cerrar_actual()
             ref_actual = ''
-            codigo_actual = m.group(0)
+            codigo_actual = m.group(0).upper()
             desc_lines = []
         else:
             desc_lines.append(linea)
