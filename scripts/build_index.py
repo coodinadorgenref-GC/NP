@@ -66,12 +66,18 @@ def main():
         return
 
     index = load_json(args.index, {})  # { codigo: { descripcion, aplicaciones: [...] } }
+    diagnosticos_totales = []
 
     for f in changed:
         modelo, anio = parse_model_year_from_filename(f['title'])
         fuente = f['title']
-        filas = parse_pdf(f['local_path'])
+        filas, diagnosticos = parse_pdf(f['local_path'])
         print(f"{fuente}: {len(filas)} filas parseadas (modelo={modelo}, año={anio})")
+        if diagnosticos:
+            print(f"  ATENCION: {len(diagnosticos)} pagina(s) con seccion detectada pero 0 filas extraidas -- ver data/diagnostico_parsing.json")
+            for d in diagnosticos:
+                d['fuente_pdf'] = fuente
+                diagnosticos_totales.append(d)
 
         vistos_en_este_pdf = set()
 
@@ -130,6 +136,16 @@ def main():
         json.dump(index, f, ensure_ascii=False, indent=2, sort_keys=True)
 
     print(f'Índice actualizado: {len(index)} códigos totales.')
+
+    diag_path = os.path.join(os.path.dirname(args.index), 'diagnostico_parsing.json')
+    if diagnosticos_totales:
+        with open(diag_path, 'w', encoding='utf-8') as f:
+            json.dump(diagnosticos_totales, f, ensure_ascii=False, indent=2, sort_keys=True)
+        print(f'AVISO: {len(diagnosticos_totales)} pagina(s) con posibles filas perdidas. Ver {diag_path}')
+    elif os.path.exists(diag_path):
+        # esta corrida no tuvo problemas -- limpiar el reporte viejo para
+        # no dejar avisos obsoletos de una corrida anterior
+        os.remove(diag_path)
 
 
 def _anotar_medidas_relacionadas(index):

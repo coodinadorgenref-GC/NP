@@ -88,10 +88,31 @@ def _linea_util(linea):
     return letras >= 3
 
 
+# Fila OCR con Ref + Código + Descripción juntos en una sola línea, ej.
+# "1  VM10010035  Estator" (tablas con texto real bajo el diagrama, donde
+# OCR sí conserva la fila completa). Ref puede traer punto o paréntesis.
+FILA_COMPLETA_OCR_RE = re.compile(r'^(\d{1,3})[.\)]?\s+([A-Z]{2}\d{6,8})\s+(.+)$')
+
+
 def _parse_tabla_ocr(page):
-    """Respaldo: renderiza la página como imagen y usa OCR. La tabla no
-    conserva estructura de columnas en el texto OCR, así que se parsea
-    como pares alternados 'línea con código' / 'línea(s) de descripción'."""
+    """Respaldo: renderiza la página como imagen y usa OCR.
+
+    Maneja DOS formatos distintos que aparecen en los catálogos, porque
+    el layout de la tabla en la imagen varía según el PDF:
+
+      1) Ref + Código + Descripción en la MISMA línea de OCR
+         (ej. "1 VM10010035 Estator") -> fila completa de una vez.
+      2) Código SOLO en su propia línea, con la descripción en la(s)
+         línea(s) siguiente(s) -> se acumulan hasta el siguiente código.
+
+    Si solo se maneja el caso 2 (como antes), tablas del tipo 1 pierden
+    TODAS sus filas en silencio: cada línea "1 VM10010035 Estator" es más
+    larga que "código + 3 caracteres", nunca dispara "código solo", y
+    termina tratada como texto descriptivo de la fila anterior (o se
+    descarta si es la primera fila de la tabla). Esto pasó con
+    "Hipster 170 - 2025.pdf" pág. 32: la tabla completa (VM10010035,
+    VM10030023, VM10010026) se perdió sin ningún aviso.
+    """
     import pytesseract
 
     im = page.to_image(resolution=300).original
@@ -99,22 +120,33 @@ def _parse_tabla_ocr(page):
 
     filas = []
     codigo_actual = None
+    ref_actual = ''
     desc_lines = []
 
     def cerrar_actual():
         if codigo_actual:
             desc = ' '.join(l.strip() for l in desc_lines if _linea_util(l)).strip()
-            filas.append({'ref': '', 'codigo': codigo_actual, 'descripcion': desc})
+            filas.append({'ref': ref_actual, 'codigo': codigo_actual, 'descripcion': desc})
 
     for linea in texto.splitlines():
         linea = linea.strip()
         if not linea:
             continue
+
+        m_completa = FILA_COMPLETA_OCR_RE.match(linea)
+        if m_completa:
+            cerrar_actual()
+            ref_actual = m_completa.group(1)
+            codigo_actual = m_completa.group(2)
+            desc_lines = [m_completa.group(3)]
+            continue
+
         m = CODE_ANYWHERE_RE.search(linea)
         # una línea que es *solo* el código (o el código + basura corta)
         # marca el inicio de una nueva pieza
         if m and len(linea) <= len(m.group(0)) + 3:
             cerrar_actual()
+            ref_actual = ''
             codigo_actual = m.group(0)
             desc_lines = []
         else:
@@ -124,8 +156,20 @@ def _parse_tabla_ocr(page):
 
 
 def parse_pdf(path, usar_ocr=True):
-    """Devuelve lista de dicts: seccion_cod, seccion_nombre, ref, codigo, descripcion, pagina, fuente"""
+    """Devuelve (results, diagnosticos).
+
+    results: lista de dicts seccion_cod, seccion_nombre, ref, codigo,
+    descripcion, pagina, fuente.
+
+    diagnosticos: lista de páginas donde se detectó un encabezado de
+    sección ("SECCION: VMxx ...", es decir, la página SÍ debería traer
+    una tabla de refacciones) pero terminamos con 0 filas extraídas ahí
+    -- ni por texto ni por OCR. Antes esto pasaba en silencio (ver caso
+    "Hipster 170 - 2025.pdf" pág. 32); ahora queda registrado para poder
+    revisar manualmente en vez de descubrirlo por accidente meses después.
+    """
     results = []
+    diagnosticos = []
     current_section = (None, None)
     with pdfplumber.open(path) as pdf:
         for i, page in enumerate(pdf.pages):
@@ -145,6 +189,19 @@ def parse_pdf(path, usar_ocr=True):
                 filas = _parse_tabla_ocr(page)
                 fuente = 'ocr'
 
+            # Diagnóstico: la página anuncia una sección de refacciones
+            # (SECCION: VMxx/VCxx ...) pero no se extrajo ninguna fila.
+            # No se limita a páginas con "m" (sección nueva en ESTA
+            # página) porque una sección puede seguir vigente de la
+            # página anterior y aun así traer su propia tabla.
+            if not filas and current_section[0] is not None:
+                diagnosticos.append({
+                    'pagina': i,
+                    'seccion_cod': current_section[0],
+                    'seccion_nombre': current_section[1],
+                    'motivo': 'seccion detectada pero 0 filas extraidas (ni texto ni OCR)',
+                })
+
             for f in filas:
                 results.append({
                     'seccion_cod': current_section[0],
@@ -155,12 +212,12 @@ def parse_pdf(path, usar_ocr=True):
                     'pagina': i,
                     'fuente': fuente,
                 })
-    return results
+    return results, diagnosticos
 
 
 if __name__ == '__main__':
     import sys
     import json
     path = sys.argv[1]
-    filas = parse_pdf(path)
-    print(json.dumps(filas, ensure_ascii=False, indent=2))
+    filas, diagnosticos = parse_pdf(path)
+    print(json.dumps({'filas': filas, 'diagnosticos': diagnosticos}, ensure_ascii=False, indent=2))
