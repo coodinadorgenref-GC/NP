@@ -1,0 +1,12 @@
+{
+  "_schema": "Cada kit representa un producto vendido por un proveedor externo que agrupa varios números de parte originales Vento en un solo artículo (ej. juegos de empacaduría). Se cruza en el catálogo admin de La Barata del Hogar contra el texto buscado.",
+  "_campos": {
+    "id": "slug único, minúsculas y guiones",
+    "nombre": "nombre completo del producto tal cual lo vende el proveedor",
+    "articulo": "N° de artículo / SKU del proveedor",
+    "proveedor": "nombre del proveedor (opcional, dejar vacío si se desconoce)",
+    "notas": "opcional",
+    "codigos_vento": "arreglo de códigos Vento (VMxxxxxxxx / VCxxxxxxxx) que ese kit reemplaza/incluye"
+  },
+  "kits": []
+}
