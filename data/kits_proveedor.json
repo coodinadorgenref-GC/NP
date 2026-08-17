@@ -8,5 +8,14 @@
     "notas": "opcional",
     "codigos_vento": "arreglo de códigos Vento (VMxxxxxxxx / VCxxxxxxxx) que ese kit reemplaza/incluye"
   },
-  "kits": []
+  "kits": [
+    {
+      "id": "roda-tapa-lateral-xpress-vento-18719",
+      "nombre": "Tapa Lateral Derecha/Izquierda Xpress Vento",
+      "articulo": "48-5511-001",
+      "proveedor": "RODA",
+      "notas": "SKU interno 18719, 3 pzas (tapa der., tapa izq., par de puntas rojas)",
+      "codigos_vento": ["VC12010395", "VC12010396"]
+    }
+  ]
 }
